@@ -20,14 +20,17 @@ def parse_args() -> argparse.Namespace:
         description="Master Trader Agent System",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
+Examples (Mock / safe):
   python main.py
   python main.py --instrument GBPUSD --timeframe H1
   python main.py --scenario bearish
   python main.py --scenario news_abort
-  python main.py --scenario sideways --instrument EURUSD
 
-Scenarios: bullish, bearish, sideways, reversal_oversold, news_abort
+Examples (Live MT5 — real orders):
+  python main.py --live
+  python main.py --live --instrument GBPUSD --timeframe H1
+
+Scenarios (mock only): bullish, bearish, sideways, reversal_oversold, news_abort
         """,
     )
     parser.add_argument(
@@ -47,6 +50,12 @@ Scenarios: bullish, bearish, sideways, reversal_oversold, news_abort
         help="Mock market scenario (default: bullish)",
     )
     parser.add_argument(
+        "--live",
+        action="store_true",
+        default=False,
+        help="Use live MT5 trading (requires MT5 terminal running and .env configured)",
+    )
+    parser.add_argument(
         "--retries",
         type=int,
         default=settings.max_strategy_retries,
@@ -63,6 +72,8 @@ async def main() -> int:
     settings.timeframe = args.timeframe
     settings.mock_scenario = args.scenario
     settings.max_strategy_retries = args.retries
+    if args.live:
+        settings.live_trading = True
 
     configure_logging(settings.log_file, settings.log_level)
     logger = get_logger("main")
@@ -76,13 +87,24 @@ async def main() -> int:
         return 1
 
     console = Console()
+    if settings.live_trading:
+        if not settings.mt5_login or not settings.mt5_password:
+            console.print(
+                "[red]ERROR: MT5_LOGIN and MT5_PASSWORD must be set in .env for live trading.[/red]"
+            )
+            return 1
+        mode_line = f"  Mode       : [bold red]LIVE MT5[/bold red] — {settings.mt5_server} (acct {settings.mt5_login})\n"
+    else:
+        mode_line = f"  Mode       : [yellow]MOCK ({settings.mock_scenario})[/yellow]\n"
+
     console.print(
         f"\n[bold cyan]Master Trader Agent System[/bold cyan]\n"
         f"  Instrument : [green]{settings.instrument}[/green]\n"
         f"  Timeframe  : [green]{settings.timeframe}[/green]\n"
-        f"  Scenario   : [yellow]{settings.mock_scenario}[/yellow]\n"
+        f"{mode_line}"
         f"  Model      : [dim]{settings.model}[/dim]\n"
         f"  SL / TP    : {settings.stop_loss_pips} pips / {settings.take_profit_pips} pips\n"
+        f"  Lot size   : {settings.mt5_lot_size if settings.live_trading else 'N/A (mock)'}\n"
     )
 
     master = MasterAgent(settings=settings, console=console)

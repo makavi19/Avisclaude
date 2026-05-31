@@ -37,10 +37,26 @@ class MasterAgent:
         self.console = console
         self.logger = get_logger("MasterAgent")
 
-        # Data providers
-        self.market_provider = MockMarketDataProvider(scenario=settings.mock_scenario)
-        self.news_provider = MockNewsProvider(scenario=settings.mock_scenario)
-        self.broker = MockBroker()
+        if settings.live_trading:
+            # Live mode — real MT5 data and broker
+            from tools.mt5_market_data import MT5MarketDataProvider
+            from tools.mt5_broker import MT5Broker
+            self.market_provider = MT5MarketDataProvider()
+            self.news_provider = MockNewsProvider(scenario="bullish")  # news always mock
+            self.broker = MT5Broker(
+                login=settings.mt5_login,
+                password=settings.mt5_password,
+                server=settings.mt5_server,
+                magic=settings.mt5_magic,
+                lot_size=settings.mt5_lot_size,
+            )
+            self._live = True
+        else:
+            # Mock mode — safe for testing
+            self.market_provider = MockMarketDataProvider(scenario=settings.mock_scenario)
+            self.news_provider = MockNewsProvider(scenario=settings.mock_scenario)
+            self.broker = MockBroker()
+            self._live = False
 
         # Sub-agents
         self.market_agent = MarketAnalysisAgent(settings, self.market_provider)
@@ -68,7 +84,20 @@ class MasterAgent:
 
         with TradingDashboard(self.console) as dashboard:
             self.dashboard = dashboard
-            dashboard.add_log(f"Pipeline started — {instrument} {timeframe} (run {run_id})", "info")
+            mode = "LIVE MT5" if self._live else f"MOCK ({self.settings.mock_scenario})"
+            dashboard.add_log(f"Pipeline started — {instrument} {timeframe} [{mode}] (run {run_id})", "info")
+
+            # Connect to MT5 if live
+            if self._live:
+                dashboard.add_log("Connecting to MT5 terminal...", "info")
+                try:
+                    await self.broker.connect()
+                    dashboard.add_log("MT5 connected successfully", "success")
+                except Exception as exc:
+                    dashboard.add_log(f"MT5 connection failed: {exc}", "error")
+                    ctx.pipeline_status = "aborted"
+                    ctx.error_message = str(exc)
+                    return ctx
 
             try:
                 # Stage 1: Market Analysis
@@ -108,10 +137,14 @@ class MasterAgent:
                 ctx.error_message = str(exc)
                 dashboard.add_log(f"FATAL: {exc}", "error")
                 dashboard.update(ctx)
-                return ctx
+            finally:
+                if self._live:
+                    await self.broker.disconnect()
+                    dashboard.add_log("MT5 disconnected", "info")
 
-            ctx.pipeline_status = "completed"
-            dashboard.add_log("Pipeline completed successfully.", "success")
+            if ctx.pipeline_status not in ("aborted", "no_go"):
+                ctx.pipeline_status = "completed"
+                dashboard.add_log("Pipeline completed successfully.", "success")
             dashboard.update(ctx)
             return ctx
 
